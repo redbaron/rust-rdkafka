@@ -349,7 +349,7 @@ unsafe impl Send for NativeQueue {}
 impl NativeQueue {
     /// Wraps a pointer to an `RDKafkaQueue` object and returns a new
     /// `NativeQueue`.
-    unsafe fn from_ptr(ptr: *mut RDKafkaQueue) -> NativeQueue {
+    fn from_ptr(ptr: *mut RDKafkaQueue) -> NativeQueue {
         NativeQueue { ptr }
     }
 

@@ -4,6 +4,7 @@ use std::cmp;
 use std::mem;
 use std::os::raw::c_void;
 use std::ptr;
+use std::ptr::NonNull;
 
 use log::trace;
 
@@ -130,7 +131,7 @@ impl<C: ConsumerContext> BaseConsumer<C> {
 
     /// Polls the consumer for messages and returns a pointer to the native rdkafka-sys struct.
     /// This method is for internal use only. Use poll instead.
-    pub(crate) fn poll_raw(&self, mut timeout: Timeout) -> Option<*mut RDKafkaMessage> {
+    pub(crate) fn poll_raw(&self, mut timeout: Timeout) -> Option<NonNull<RDKafkaMessage>> {
         loop {
             unsafe { rdsys::rd_kafka_poll(self.client.native_ptr(), 0) };
             let op_timeout = cmp::min(timeout, self.main_queue_min_poll_interval);
@@ -138,7 +139,7 @@ impl<C: ConsumerContext> BaseConsumer<C> {
                 rdsys::rd_kafka_consumer_poll(self.client.native_ptr(), op_timeout.as_millis())
             };
             if !message_ptr.is_null() {
-                break Some(message_ptr);
+                break Some(unsafe { NonNull::new_unchecked(message_ptr) });
             }
             if op_timeout >= timeout {
                 break None;
@@ -162,7 +163,7 @@ impl<C: ConsumerContext> BaseConsumer<C> {
     /// The returned message lives in the memory of the consumer and cannot outlive it.
     pub fn poll<T: Into<Timeout>>(&self, timeout: T) -> Option<KafkaResult<BorrowedMessage>> {
         self.poll_raw(timeout.into())
-            .map(|ptr| unsafe { BorrowedMessage::from_consumer(ptr, self) })
+            .map(|ptr| BorrowedMessage::from_consumer(ptr, self))
     }
 
     /// Returns an iterator over the available messages.

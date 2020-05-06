@@ -63,16 +63,12 @@ impl FromClientConfig for StreamConsumer {
 
 /// Native message queue nonempty callback. This callback will run whenever the
 /// consumer's message queue switches from empty to nonempty.
-extern "C" fn native_message_queue_nonempty_cb(
-    _: *mut RDKafka,
-    opaque_ptr: *mut c_void,
-) {
-    
+extern "C" fn native_message_queue_nonempty_cb(_: *mut RDKafka, opaque_ptr: *mut c_void) {
     // restore opaque pointer into Pin<&T>. We could restore into &T, but
     // keeping Pin<> protects us from accidental moving out
     // Original pointer was for Pin<Box<T>>, but Box<T> owns value
     // and frees it in Drop, thats not what we want.
-    let queue_arg : Pin<&QueueNonEmptyCbArg>;
+    let queue_arg: Pin<&QueueNonEmptyCbArg>;
     unsafe {
         queue_arg = Pin::new_unchecked(&*(opaque_ptr as *mut QueueNonEmptyCbArg));
     }
@@ -167,7 +163,7 @@ impl<C: ConsumerContext> Drop for StreamConsumer<C> {
     }
 }
 
-impl<'a, C: ConsumerContext> Stream for &'a StreamConsumer<C> {
+impl<'a, C: ConsumerContext + 'a> Stream for &'a StreamConsumer<C> {
     type Item = KafkaResult<BorrowedMessage<'a>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
@@ -175,7 +171,7 @@ impl<'a, C: ConsumerContext> Stream for &'a StreamConsumer<C> {
             .consumer
             .poll_raw(Timeout::After(Duration::from_secs(0)))
         {
-            let msg = unsafe { BorrowedMessage::from_consumer(m_ptr, &self.consumer) };
+            let msg = BorrowedMessage::from_ptr(m_ptr);
             return Poll::Ready(Some(msg));
         }
 
@@ -199,7 +195,7 @@ impl<'a, C: ConsumerContext> Stream for &'a StreamConsumer<C> {
             }
             Some(m_ptr) => {
                 // There was indeed a notification race, which we've caught
-                let msg = unsafe { BorrowedMessage::from_consumer(m_ptr, &self.consumer) };
+                let msg = BorrowedMessage::from_ptr(m_ptr);
                 return Poll::Ready(Some(msg));
             }
         };

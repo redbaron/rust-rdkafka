@@ -2,9 +2,9 @@
 
 use std::ffi::{CStr, CString};
 use std::fmt;
-use std::marker::PhantomData;
 use std::os::raw::c_void;
 use std::ptr;
+use std::ptr::NonNull;
 use std::str;
 use std::time::SystemTime;
 
@@ -191,8 +191,7 @@ impl Headers for BorrowedHeaders {
 /// ## Conversion to owned
 /// To transform a `BorrowedMessage` into a `OwnedMessage`, use the `detach` method.
 pub struct BorrowedMessage<'a> {
-    ptr: *mut RDKafkaMessage,
-    _owner: PhantomData<&'a u8>,
+    msg: &'a mut RDKafkaMessage,
 }
 
 /// The result of a message production.
@@ -217,25 +216,28 @@ impl<'a> BorrowedMessage<'a> {
     /// consumer. The lifetime of the message will be bound to the lifetime of the consumer passed
     /// as parameter. This method should only be used with messages coming from consumers. If the
     /// message contains an error, only the error is returned and the message structure is freed.
-    pub(crate) unsafe fn from_consumer<C>(
-        ptr: *mut RDKafkaMessage,
-        _consumer: &'a C,
-    ) -> KafkaResult<BorrowedMessage<'a>> {
-        if (*ptr).err.is_error() {
-            let err = match (*ptr).err {
+    pub(crate) fn from_ptr<'b>(ptr: NonNull<RDKafkaMessage>) -> KafkaResult<BorrowedMessage<'b>> {
+        let msg = unsafe { &mut *ptr.as_ptr() };
+
+        if msg.err.is_error() {
+            let err = match msg.err {
                 rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__PARTITION_EOF => {
-                    KafkaError::PartitionEOF((*ptr).partition)
+                    KafkaError::PartitionEOF(msg.partition)
                 }
                 e => KafkaError::MessageConsumption(e.into()),
             };
-            rdsys::rd_kafka_message_destroy(ptr);
+            unsafe { rdsys::rd_kafka_message_destroy(msg as *mut RDKafkaMessage) };
             Err(err)
         } else {
-            Ok(BorrowedMessage {
-                ptr,
-                _owner: PhantomData,
-            })
+            Ok(BorrowedMessage { msg })
         }
+    }
+
+    pub(crate) fn from_consumer<C>(
+        ptr: NonNull<RDKafkaMessage>,
+        _consumer: &'a C,
+    ) -> KafkaResult<BorrowedMessage<'a>> {
+        BorrowedMessage::from_ptr(ptr)
     }
 
     /// Creates a new `BorrowedMessage` that wraps the native Kafka message pointer returned by the
@@ -246,10 +248,8 @@ impl<'a> BorrowedMessage<'a> {
         ptr: *mut RDKafkaMessage,
         _owner: &'a O,
     ) -> DeliveryResult<'a> {
-        let borrowed_message = BorrowedMessage {
-            ptr,
-            _owner: PhantomData,
-        };
+        let msg = &mut *ptr;
+        let borrowed_message = BorrowedMessage { msg };
         if (*ptr).err.is_error() {
             Err((
                 KafkaError::MessageProduction((*ptr).err.into()),
@@ -261,23 +261,28 @@ impl<'a> BorrowedMessage<'a> {
     }
 
     /// Returns a pointer to the RDKafkaMessage.
-    pub fn ptr(&self) -> *mut RDKafkaMessage {
-        self.ptr
+    pub fn ptr(&self) -> *const RDKafkaMessage {
+        self.msg
+    }
+
+    /// Returns a mutable pointer to the RDKafkaMessage
+    pub fn mut_ptr(&mut self) -> *mut RDKafkaMessage {
+        self.msg
     }
 
     /// Returns a pointer to the message's RDKafkaTopic
     pub fn topic_ptr(&self) -> *mut RDKafkaTopic {
-        unsafe { (*self.ptr).rkt }
+        return self.msg.rkt;
     }
 
     /// Returns the length of the key field of the message.
     pub fn key_len(&self) -> usize {
-        unsafe { (*self.ptr).key_len }
+        self.msg.key_len
     }
 
     /// Returns the length of the payload field of the message.
     pub fn payload_len(&self) -> usize {
-        unsafe { (*self.ptr).len }
+        self.msg.len
     }
 
     /// Clones the content of the `BorrowedMessage` and returns an `OwnedMessage`, that can
@@ -299,32 +304,33 @@ impl<'a> Message for BorrowedMessage<'a> {
     type Headers = BorrowedHeaders;
 
     fn key(&self) -> Option<&[u8]> {
-        unsafe { util::ptr_to_opt_slice((*self.ptr).key, (*self.ptr).key_len) }
+        unsafe { util::ptr_to_opt_slice(self.msg.key, self.msg.key_len) }
     }
 
     fn payload(&self) -> Option<&[u8]> {
-        unsafe { util::ptr_to_opt_slice((*self.ptr).payload, (*self.ptr).len) }
+        unsafe { util::ptr_to_opt_slice(self.msg.payload, self.msg.len) }
     }
 
     fn topic(&self) -> &str {
         unsafe {
-            CStr::from_ptr(rdsys::rd_kafka_topic_name((*self.ptr).rkt))
+            CStr::from_ptr(rdsys::rd_kafka_topic_name(self.msg.rkt))
                 .to_str()
                 .expect("Topic name is not valid UTF-8")
         }
     }
 
     fn partition(&self) -> i32 {
-        unsafe { (*self.ptr).partition }
+        self.msg.partition
     }
 
     fn offset(&self) -> i64 {
-        unsafe { (*self.ptr).offset }
+        self.msg.offset
     }
 
     fn timestamp(&self) -> Timestamp {
         let mut timestamp_type = rdsys::rd_kafka_timestamp_type_t::RD_KAFKA_TIMESTAMP_NOT_AVAILABLE;
-        let timestamp = unsafe { rdsys::rd_kafka_message_timestamp(self.ptr, &mut timestamp_type) };
+        let timestamp =
+            unsafe { rdsys::rd_kafka_message_timestamp(self.ptr(), &mut timestamp_type) };
         if timestamp == -1 {
             Timestamp::NotAvailable
         } else {
@@ -345,7 +351,7 @@ impl<'a> Message for BorrowedMessage<'a> {
     fn headers(&self) -> Option<&BorrowedHeaders> {
         let mut native_headers_ptr = ptr::null_mut();
         unsafe {
-            let err = rdsys::rd_kafka_message_headers(self.ptr, &mut native_headers_ptr);
+            let err = rdsys::rd_kafka_message_headers(self.ptr(), &mut native_headers_ptr);
             match err.into() {
                 RDKafkaError::NoError => {
                     Some(BorrowedHeaders::from_native_ptr(self, native_headers_ptr))
@@ -360,7 +366,7 @@ impl<'a> Message for BorrowedMessage<'a> {
 impl<'a> Drop for BorrowedMessage<'a> {
     fn drop(&mut self) {
         trace!("Destroying message {:?}", self);
-        unsafe { rdsys::rd_kafka_message_destroy(self.ptr) };
+        unsafe { rdsys::rd_kafka_message_destroy(self.mut_ptr()) };
     }
 }
 
