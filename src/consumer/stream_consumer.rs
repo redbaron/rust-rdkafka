@@ -9,7 +9,8 @@ use rdkafka_sys as rdsys;
 use rdkafka_sys::types::RDKafka;
 use std::os::raw::c_void;
 
-use futures::Stream;
+use futures::ready;
+use futures::stream::{self, Stream, StreamExt};
 use log::trace;
 
 use std::sync::Mutex;
@@ -17,7 +18,7 @@ use std::sync::Mutex;
 use crate::config::{ClientConfig, FromClientConfig, FromClientConfigAndContext};
 use crate::consumer::base_consumer::BaseConsumer;
 use crate::consumer::{Consumer, ConsumerContext, DefaultConsumerContext};
-use crate::error::KafkaResult;
+use crate::error::{KafkaError, KafkaResult};
 use crate::message::BorrowedMessage;
 use crate::util::Timeout;
 
@@ -106,7 +107,59 @@ impl<C: ConsumerContext> FromClientConfigAndContext<C> for StreamConsumer<C> {
     }
 }
 
-impl<C: ConsumerContext> StreamConsumer<C> {}
+impl<C: ConsumerContext> StreamConsumer<C> {
+    /// Creates Stream
+    pub fn start(&self) -> &StreamConsumer<C> {
+        self
+    }
+
+    /// Starts the Stream. Additionally, if `no_message_error`
+    /// is set to true, it will return an error of type
+    /// `KafkaError::NoMessageReceived` every
+    ///  `empty_queue_interval` when no message has
+    /// been received.
+    ///
+    /// Use this method only if `no_message_error` is set,
+    /// otherwise prefer [start][StreamConsumer::start]
+    #[cfg(feature = "tokio-ticker")]
+    pub fn start_with<'a>(
+        &'a self,
+        empty_queue_interval: Duration,
+        no_message_error: bool,
+    ) -> stream::PollFn<
+        impl FnMut(&mut Context) -> Poll<Option<<&'a StreamConsumer as Stream>::Item>>,
+    > {
+        use futures::future::Either;
+        let ticker = if no_message_error {
+            Either::Left(tokio::time::interval(empty_queue_interval))
+        } else {
+            Either::Right(stream::empty::<tokio::time::Instant>())
+        };
+        self.start_with_error_ticker(ticker)
+    }
+
+    /// Creates a stream which produces `KafkaError::NoMessageReceived`
+    /// every tick when there is no queue. ticker argument is a stream
+    /// which produces new event at desired intervals.
+    pub fn start_with_error_ticker<'a, T: Stream + Unpin>(
+        mut self: &'a Self,
+        ticker: T,
+    ) -> stream::PollFn<
+        impl FnMut(&mut Context) -> Poll<Option<<&'a StreamConsumer as Stream>::Item>>,
+    > {
+        let mut err_ticker = ticker.map(|_| KafkaError::NoMessageReceived);
+
+        stream::poll_fn(move |cx| {
+            let poll_result = Pin::new(&mut self).as_mut().poll_next(cx);
+            match poll_result {
+                Poll::Pending => {
+                    Poll::Ready(ready!(Pin::new(&mut err_ticker).as_mut().poll_next(cx)).map(Err))
+                }
+                _ => poll_result,
+            }
+        })
+    }
+}
 
 impl<C: ConsumerContext> Drop for StreamConsumer<C> {
     fn drop(&mut self) {

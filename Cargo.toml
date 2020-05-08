@@ -21,6 +21,7 @@ log = "0.4.8"
 serde = { version = "1.0.0", features = ["derive"] }
 serde_derive = "1.0.0"
 serde_json = "1.0.0"
+tokio = { version = "^0.2", optional = true, features = ["time", "stream"] }
 
 [dev-dependencies]
 backoff = "0.1.5"
@@ -49,6 +50,7 @@ zstd = ["rdkafka-sys/zstd"]
 zstd-pkg-config = ["rdkafka-sys/zstd-pkg-config"]
 external-lz4 = ["rdkafka-sys/external-lz4"]
 external_lz4 = ["rdkafka-sys/external_lz4"]
+tokio-ticker = ["tokio/time", "tokio/stream" ]
 
 [package.metadata.docs.rs]
 # docs.rs doesn't allow writing to ~/.cargo/registry (reasonably), so we have to
