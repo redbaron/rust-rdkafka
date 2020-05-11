@@ -104,6 +104,8 @@ impl<C: ConsumerContext> FromClientConfigAndContext<C> for BaseConsumer<C> {
             RDKafkaType::RD_KAFKA_CONSUMER,
             context,
         )?;
+
+
         let queue = client.consumer_queue();
         unsafe {
             if let Some(queue) = &queue {
@@ -113,6 +115,8 @@ impl<C: ConsumerContext> FromClientConfigAndContext<C> for BaseConsumer<C> {
                     Some(native_message_queue_nonempty_cb::<C>),
                     context_ptr,
                 );
+
+                rdsys::rd_kafka_poll_set_consumer(client.native_client().ptr());
             }
         }
         Ok(BaseConsumer {
@@ -133,7 +137,9 @@ impl<C: ConsumerContext> BaseConsumer<C> {
     /// This method is for internal use only. Use poll instead.
     pub(crate) fn poll_raw(&self, mut timeout: Timeout) -> Option<NonNull<RDKafkaMessage>> {
         loop {
-            unsafe { rdsys::rd_kafka_poll(self.client.native_ptr(), 0) };
+            if self._queue.is_none() {
+                unsafe { rdsys::rd_kafka_poll(self.client.native_ptr(), 0) };
+            }
             let op_timeout = cmp::min(timeout, self.main_queue_min_poll_interval);
             let message_ptr = unsafe {
                 rdsys::rd_kafka_consumer_poll(self.client.native_ptr(), op_timeout.as_millis())
