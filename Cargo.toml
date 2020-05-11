@@ -31,11 +31,17 @@ env_logger = "0.7.1"
 rand = "0.3.15"
 regex = "1.1.6"
 tokio = { version = "0.2", features = ["blocking", "macros", "rt-core", "time"] }
+criterion = "0.3"
+
+[[bench]]
+name = "stream_consumer"
+harness = false
+
 
 # These features are re-exports of the features that the rdkafka-sys crate
 # provides. See the rdkafka-sys documentation for details.
 [features]
-default = ["libz"]
+default = ["libz", "tokio-ticker"]
 cmake-build = ["rdkafka-sys/cmake-build"]
 cmake_build = ["rdkafka-sys/cmake_build"]
 dynamic_linking = ["rdkafka-sys/dynamic_linking"]
